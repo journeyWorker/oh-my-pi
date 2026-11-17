@@ -1137,6 +1137,48 @@ function withoutReasoning(spec: ModelSpec<Api>, isAnthropic: boolean): ModelSpec
 	} as ModelSpec<Api>;
 }
 
+/**
+ * Client API shapes a `/v1/models` row can advertise through `preferred_endpoints`
+ * (agentgateway). The identifiers are versionless client formats, not URLs.
+ * Gemini/Bedrock identifiers carry `{model}` placeholders and name no API omp
+ * can call through this provider, so they are ignored.
+ */
+function preferredEndpointApi(endpoint: string): Api | undefined {
+	switch (endpoint) {
+		case "/messages":
+			return "anthropic-messages";
+		case "/responses":
+			return "openai-responses";
+		case "/chat/completions":
+			return "openai-completions";
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * API for a row that advertises `preferred_endpoints`. The provider's configured
+ * `api` stays when the row advertises it; otherwise omp's own preference decides
+ * among the advertised endpoints it supports: Responses, then Messages, then
+ * Chat Completions. An absent, empty or non-array field keeps the configured
+ * `api`; a non-empty array with no supported entry returns `undefined`, and the
+ * row is not listed.
+ */
+function resolvePreferredEndpointApi(preferredEndpoints: unknown, configured: Api): Api | undefined {
+	if (!Array.isArray(preferredEndpoints) || preferredEndpoints.length === 0) return configured;
+	const advertised = new Set<Api>();
+	for (const endpoint of preferredEndpoints) {
+		if (typeof endpoint !== "string") continue;
+		const api = preferredEndpointApi(endpoint);
+		if (api) advertised.add(api);
+	}
+	if (advertised.has(configured)) return configured;
+	if (advertised.has("openai-responses")) return "openai-responses";
+	if (advertised.has("anthropic-messages")) return "anthropic-messages";
+	if (advertised.has("openai-completions")) return "openai-completions";
+	return undefined;
+}
+
 export async function discoverOpenAIModelsList(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
@@ -1184,6 +1226,9 @@ export async function discoverOpenAIModelsList(
 				return (await res.json()) as {
 					data?: Array<{
 						id?: string;
+						name?: unknown;
+						display_name?: unknown;
+						preferred_endpoints?: unknown;
 						max_model_len?: unknown;
 						context_length?: unknown;
 						max_output_tokens?: unknown;
@@ -1222,6 +1267,13 @@ export async function discoverOpenAIModelsList(
 		const id = item.id;
 		if (!id) continue;
 		if (providerConfig.discovery.type === "litellm" && !isSelectableLiteLLMModelMode(item.mode)) continue;
+		// A row whose `preferred_endpoints` names only APIs omp cannot call
+		// (batch, embeddings, video) is not a model this provider can chat with.
+		const endpointApi =
+			providerConfig.discovery.type === "openai-models-list"
+				? resolvePreferredEndpointApi(item.preferred_endpoints, providerConfig.api)
+				: providerConfig.api;
+		if (!endpointApi) continue;
 		const nativeMetadataForModel = nativeMetadata?.get(id);
 		// Thin OpenAI-compatible proxies frequently omit `context_length`/
 		// `max_model_len` on `/v1/models`, leaving discovered models pinned at
@@ -1237,7 +1289,21 @@ export async function discoverOpenAIModelsList(
 		// codex-lb and similar registries nest the route's identity beside its
 		// reasoning ladder: `display_name`, `context_window`, `input_modalities`.
 		const metadata = isRecord(item.metadata) ? item.metadata : undefined;
-		const advertisedName = typeof metadata?.display_name === "string" ? metadata.display_name.trim() : "";
+		// Gateways nest the display name under `metadata.display_name`
+		// (codex-lb), spell it `display_name` (Anthropic, Together, Novita) or
+		// `name` (OpenRouter, agentgateway). `display_name` outranks `name`
+		// because some lists put a repo path in `name` (Synthetic:
+		// `openai/gpt-oss-120b`) and the label in `display_name`. A value equal
+		// to the id (Envoy and new-api send `display_name == id`) adds nothing
+		// over the bundled name.
+		let advertisedName = "";
+		for (const candidate of [metadata?.display_name, item.display_name, item.name]) {
+			const trimmed = typeof candidate === "string" ? candidate.trim() : "";
+			if (trimmed && trimmed !== id) {
+				advertisedName = trimmed;
+				break;
+			}
+		}
 		const input = nativeMetadataForModel?.input ??
 			extractOpenAIModelsListInputCapabilities(item) ??
 			reference?.input ?? ["text"];
@@ -1302,10 +1368,11 @@ export async function discoverOpenAIModelsList(
 			} as ModelSpec<Api>);
 			continue;
 		}
+		// A row that advertises `preferred_endpoints` is served on the API
+		// resolved above, so one provider can serve Claude, GPT and Grok rows on
+		// their own wire.
 		const api =
-			providerConfig.discovery.type === "litellm"
-				? resolveLiteLLMApi(item, id, providerConfig.api)
-				: providerConfig.api;
+			providerConfig.discovery.type === "litellm" ? resolveLiteLLMApi(item, id, providerConfig.api) : endpointApi;
 		const contextWindow = reportedContextWindow ?? DISCOVERY_DEFAULT_CONTEXT_WINDOW;
 		// A row that advertises its own reasoning ladder (codex-lb `metadata`
 		// fields, or the top-level equivalents) is authoritative for its route:

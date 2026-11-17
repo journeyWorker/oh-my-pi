@@ -4,6 +4,7 @@
 
 ### Added
 
+- `openai-models-list` discovery now names a model from `metadata.display_name`, then the row's top-level `display_name`, then `name` (each ignored when equal to the id), and routes a row that advertises `preferred_endpoints`: it keeps the provider's `api` if the row supports it, otherwise uses Responses, then Messages, then Chat Completions, and skips a row that lists only APIs omp cannot call, so one gateway provider can serve Claude, GPT and Grok rows on their own API
 - Computer `el.setValue(75)` now writes the number as `"75"` instead of refusing a non-string; `NaN`, `Infinity`, booleans and objects are still refused, as are a whole number past 2^53 and a number that prints with an exponent, which are passed as text in digits instead ([#19405](https://github.com/can1357/oh-my-pi/pull/19405) by [@will-bogusz](https://github.com/will-bogusz))
 - Added a report of native windows to browser results on macOS for visible managed browsers, spawned Chromium browsers and a loopback relay: a `<select>` menu, colour or date picker, or a print, save, sign-in, passkey or permission sheet or bubble a call raised over its tab is named with its `computer.window()` id while the browser's tab list shows that tab in front of its window, by the next call when it shows just after the call returned, and on failed calls too; connected CDP endpoints, remote relays and page-backed popup windows are excluded ([#18925](https://github.com/can1357/oh-my-pi/pull/18925) by [@will-bogusz](https://github.com/will-bogusz))
 
